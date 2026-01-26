@@ -1,0 +1,25 @@
+[package]
+name = "nclr"
+version = "0.0.1"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "NDK Color: color conversion and 16↔8 bit-depth conversion using LittleCMS2 (lcms2 crate)"
+readme = "README.md"
+keywords = ["ndk", "icc", "lcms2", "color-management", "jpeg2000", "tiff"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff"] }
+tiff = "0.9"
+lcms2 = "6.1"
+rgb = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+debug = 0
