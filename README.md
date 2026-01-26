@@ -7,6 +7,79 @@ NCLR provides a **reference preprocessing step** for digitization pipelines wher
 It is designed for use in memory institutions (libraries, archives, museums) and aligns with NDK-style digitization practice.
 
 ---
+## Build from Source
+
+### Prerequisites
+1. Install [Git](https://git-scm.com/)
+2. Install [**Rust** (stable)](https://www.rust-lang.org/tools/install) and Cargo
+
+### Compilation
+
+#### Windows
+1. ```bash
+   git clone https://github.com/bezverec/nclr.git
+   ```
+2. ```bash
+   cd nclr
+   ```
+3. ```bash
+   $env:RUSTFLAGS="-C target-cpu=native"; cargo build --release
+   ```
+
+#### Linux
+1. ```bash
+   git clone https://github.com/bezverec/nclr.git
+   ```
+2. ```bash
+   cd nclr
+   ```
+3. ```bash
+   RUSTFLAGS="-C target-cpu=native" cargo build --release
+   ```
+
+#### macOS
+1. ```bash
+   git clone https://github.com/bezverec/nclr.git
+   ```
+2. ```bash
+   cd nclr
+   ```
+3. ```bash
+   RUSTFLAGS="-C target-cpu=native" cargo build --release
+   ```
+
+### Installation
+
+After building, the executable will be located at:
+
+- **Windows**: `target/release/nclr.exe`
+- **Linux/macOS**: `target/release/nclr`
+
+You can copy it to a directory in your PATH or install it system-wide:
+
+**Linux/macOS**:
+```bash
+sudo cp target/release/nclr /usr/local/bin/
+```
+
+**Windows** (PowerShell as Administrator):
+```powershell
+Copy-Item target/release/nclr.exe "C:\Windows\System32\"
+```
+
+### Build options
+
+For maximum performance on your specific CPU:
+```bash
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+```
+
+For a generic build (compatible with older CPUs):
+```bash
+cargo build --release
+```
+
+---
 
 ## Why this tool exists
 
