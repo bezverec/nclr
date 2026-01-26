@@ -2,12 +2,9 @@
 
 **ICC-aware color-space and bit-depth conversion for digitization workflows**
 
-NCLR provides a **reference preprocessing step** for digitization pipelines where
-archival-quality images must be converted into viewer-compatible derivatives **before**
-JPEG 2000 compression.
+NCLR provides a **reference preprocessing step** for digitization pipelines where archival-quality images must be converted into viewer-compatible derivatives **before** JPEG 2000 compression.
 
-It is designed for use in memory institutions (libraries, archives, museums) and aligns
-with NDK-style digitization practice.
+It is designed for use in memory institutions (libraries, archives, museums) and aligns with NDK-style digitization practice.
 
 ---
 
@@ -26,8 +23,7 @@ Relying on JPEG 2000 encoders for these tasks leads to:
 - inconsistent visual results.
 
 **Conclusion:**  
-Color-space conversion and bit-depth reduction must be performed *before* JPEG 2000 compression,
-using a proper Color Management System (CMS).
+Color-space conversion and bit-depth reduction must be performed *before* JPEG 2000 compression, using a proper Color Management System (CMS).
 
 NCLR implements that step using **LittleCMS 2** via the safe Rust crate `lcms2`.
 
@@ -56,6 +52,11 @@ NCLR implements that step using **LittleCMS 2** via the safe Rust crate `lcms2`.
 - For TIFF output:
   - embeds output ICC (when policy allows it)
   - writes proper resolution tags (XResolution, YResolution, ResolutionUnit)
+- Batch conversion:
+  - input **file or directory**
+  - output **file or directory**
+  - optional `--recursive / -r`
+  - parallel processing (`--jobs`)
 
 ---
 
@@ -82,12 +83,9 @@ JPEG 2000 compression happens afterwards.**
 
 ## Important: MC → MC rewrite for JHOVE-valid TIFF ("MC II")
 
-In normal NDK digitization workflows you typically **do not** need to convert
-**Master Copy → Master Copy**.
+In normal NDK digitization workflows you typically **do not** need to convert **Master Copy → Master Copy**.
 
-However, real-world digitization collections often contain **source “MC” TIFFs**
-with non-standard scanner/vendor tags or malformed IFD entries. Preservation
-validation tools (e.g. **JHOVE TIFF-hul**) may report errors such as:
+However, real-world digitization collections often contain **source "MC" TIFFs** with non-standard scanner/vendor tags or malformed IFD entries. Preservation validation tools (e.g. **JHOVE TIFF-hul**) may report errors such as:
 
 - *Type mismatch for tag …; expecting 7, saw 2*
 - other metadata/IFD inconsistencies
@@ -96,8 +94,7 @@ These files may still be viewable, but they are **not well-formed** under strict
 
 ### Recommended practice: MC → MC rewrite ("MC II")
 
-If your goal is a **JHOVE-valid TIFF**, NCLR can be used to **rewrite the TIFF as MC again**.
-This produces a normalized archival master, recommended to label as:
+If your goal is a **JHOVE-valid TIFF**, NCLR can be used to **rewrite the TIFF as MC again**. This produces a normalized archival master, recommended to label as:
 
 **MC II** = *NDK-normalized Master Copy rewrite*  
 ("second-generation MC" created intentionally for NDK compliance and validation)
@@ -115,8 +112,7 @@ What is intentionally **not** preserved:
 - scanner/vendor/private TIFF tags
 - other nonessential metadata
 
-> This metadata loss is intentional and aligns with NDK-style preservation practice:
-> the preservation master is defined primarily by **pixel content + ICC + resolution + essential TIFF structure**.
+> This metadata loss is intentional and aligns with NDK-style preservation practice: the preservation master is defined primarily by **pixel content + ICC + resolution + essential TIFF structure**.
 
 ### When to use MC → MC ("MC II")
 
@@ -133,16 +129,13 @@ Avoid MC → MC rewrite when:
 - you must preserve scanner provenance metadata (EXIF/XMP/vendor tags),
 - you rely on proprietary tags downstream.
 
-If you must keep metadata, handle it in a separate pipeline stage
-(e.g. tag copying with ExifTool after conversion). Note that invalid tag typing
-cannot always be “fixed” without rewriting the TIFF structure.
+If you must keep metadata, handle it in a separate pipeline stage (e.g. tag copying with ExifTool after conversion). Note that invalid tag typing cannot always be "fixed" without rewriting the TIFF structure.
 
 ---
 
-## Usage examples
+# NCLR Usage Examples
 
-Notes:
-
+**Notes:**
 - Prefer `--preset` for NDK-style workflows. You can still override anything explicitly.
 - For 16-bit workflows use TIFF/PNG as input (JPEG is typically 8-bit).
 - Under NDK policy:
@@ -152,9 +145,9 @@ Notes:
 
 ---
 
-### 1) Recommended way: presets
+## 1) Recommended Way: Presets
 
-#### NDK UC-II (maps/manuscripts/old prints): 16-bit MC → 8-bit UC, output ICC (sRGB embedded)
+### NDK UC-II (maps/manuscripts/old prints): 16-bit MC → 8-bit UC, output ICC (sRGB embedded)
 
 ```bash
 nclr \
@@ -163,7 +156,7 @@ nclr \
   --output UC_8bit.tif
 ```
 
-#### NDK UC-I (books/periodicals): 16-bit MC → 8-bit UC, **no output ICC** (policy)
+### NDK UC-I (books/periodicals): 16-bit MC → 8-bit UC, **no output ICC** (policy)
 
 ```bash
 nclr \
@@ -172,7 +165,7 @@ nclr \
   --output UC_8bit.tif
 ```
 
-#### NDK MC → MC rewrite ("MC II"): 16-bit output, ICC preserved (use when you need JHOVE-valid TIFF)
+### NDK MC → MC rewrite ("MC II"): 16-bit output, ICC preserved (use when you need JHOVE-valid TIFF)
 
 ```bash
 nclr \
@@ -183,9 +176,35 @@ nclr \
 
 ---
 
-### 2) Explicit NDK profile (same idea as presets)
+## 2) Batch Conversion (Directory → Directory)
 
-#### UC-II via policy flag
+Convert all supported images in a folder to TIFF, keeping base names:
+
+```bash
+nclr \
+  --preset ndk-uc-ii \
+  --input  D:\scans\MC \
+  --output D:\scans\UC \
+  --out-ext tif
+```
+
+Recursive variant (also available as `-r`):
+
+```bash
+nclr --preset ndk-uc-ii -r --input D:\scans\MC --output D:\scans\UC --out-ext tif
+```
+
+Parallel processing (0 = default Rayon behavior, otherwise set explicit worker count):
+
+```bash
+nclr --preset ndk-uc-ii -r --jobs 8 --input D:\scans\MC --output D:\scans\UC
+```
+
+---
+
+## 3) Explicit NDK Profile (Same Idea as Presets)
+
+### UC-II via policy flag
 
 ```bash
 nclr \
@@ -194,7 +213,7 @@ nclr \
   --output UC_8bit.tif
 ```
 
-#### UC-I via policy flag (forces ICC OFF)
+### UC-I via policy flag (forces ICC OFF)
 
 ```bash
 nclr \
@@ -203,7 +222,7 @@ nclr \
   --output UC_8bit.tif
 ```
 
-#### MC via policy flag (MC → MC rewrite)
+### MC via policy flag (MC → MC rewrite)
 
 ```bash
 nclr \
@@ -214,9 +233,9 @@ nclr \
 
 ---
 
-### 3) ICC handling examples
+## 4) ICC Handling Examples
 
-#### Automatic embedded ICC detection (default `--detect-input-icc auto`)
+### Automatic embedded ICC detection (default `--detect-input-icc auto`)
 
 ```bash
 nclr \
@@ -226,7 +245,7 @@ nclr \
   --detect-input-icc auto
 ```
 
-#### Force input ICC to sRGB (ignore embedded profile)
+### Force input ICC to sRGB (ignore embedded profile)
 
 ```bash
 nclr \
@@ -236,7 +255,7 @@ nclr \
   --detect-input-icc srgb
 ```
 
-#### Provide explicit input ICC file (scanner/workspace profile)
+### Provide explicit input ICC file (scanner/workspace profile)
 
 ```bash
 nclr \
@@ -247,7 +266,7 @@ nclr \
   --input-icc-file scanner_profile.icc
 ```
 
-#### UC-I but force output ICC anyway (override policy)
+### UC-I but force output ICC anyway (override policy)
 
 ```bash
 nclr \
@@ -258,21 +277,25 @@ nclr \
   --output out.tif
 ```
 
-#### Write ICC sidecar explicitly (optional; output TIFF already contains embedded ICC when policy allows it)
+### Write ICC sidecar(s) (next to output image)
+
+Single-file example (writes `out.icc` next to `out.tif`):
 
 ```bash
-nclr \
-  --preset ndk-uc-ii \
-  --write-icc out_profile.icc \
-  --input input.tif \
-  --output out.tif
+nclr --preset ndk-uc-ii --write-icc --input input.tif --output out.tif
+```
+
+Batch example (writes `*.icc` next to each output image in the output directory):
+
+```bash
+nclr --preset ndk-uc-ii --write-icc --input D:\scans\MC --output D:\scans\UC --out-ext tif
 ```
 
 ---
 
-### 4) Rendering intent + BPC
+## 5) Rendering Intent + BPC
 
-#### Perceptual (good default for viewer derivatives)
+### Perceptual (good default for viewer derivatives)
 
 ```bash
 nclr \
@@ -283,7 +306,7 @@ nclr \
   --output out.tif
 ```
 
-#### Relative colorimetric + BPC (often preferred for “faithful” reproduction)
+### Relative colorimetric + BPC (often preferred for "faithful" reproduction)
 
 ```bash
 nclr \
@@ -294,7 +317,7 @@ nclr \
   --output out.tif
 ```
 
-#### Absolute colorimetric (proofing-type workflows)
+### Absolute colorimetric (proofing-type workflows)
 
 ```bash
 nclr \
@@ -307,9 +330,9 @@ nclr \
 
 ---
 
-### 5) Bit depth, tone mapping and dithering
+## 6) Bit Depth, Tone Mapping and Dithering
 
-#### Force 8-bit output explicitly
+### Force 8-bit output explicitly
 
 ```bash
 nclr \
@@ -319,7 +342,7 @@ nclr \
   --output out.tif
 ```
 
-#### 16→8 with tone mapping (Gamma) + dithering (helps gradients)
+### 16→8 with tone mapping (Gamma) + dithering (helps gradients)
 
 ```bash
 nclr \
@@ -330,7 +353,7 @@ nclr \
   --output out.tif
 ```
 
-#### 16→8 with perceptual tone mapping + dithering
+### 16→8 with perceptual tone mapping + dithering
 
 ```bash
 nclr \
@@ -343,9 +366,9 @@ nclr \
 
 ---
 
-### 6) Diagnostics / troubleshooting
+## 7) Diagnostics / Troubleshooting
 
-#### Print ICC diagnostics (profile sizes + versions)
+### Print ICC diagnostics (profile sizes + versions)
 
 ```bash
 nclr \
@@ -355,7 +378,7 @@ nclr \
   --output out.tif
 ```
 
-#### Skip ICC transform entirely (only bit depth conversion / alpha drop)
+### Skip ICC transform entirely (only bit depth conversion / alpha drop)
 
 ```bash
 nclr \
@@ -367,9 +390,9 @@ nclr \
 
 ---
 
-### 7) Pipeline example: NCLR → JPEG2000 (Grok)
+## 8) Pipeline Example: NCLR → JPEG2000 (Grok)
 
-#### UC-II (NDK-ish): convert to 8-bit sRGB first, then compress to JP2
+### UC-II (NDK-ish): convert to 8-bit sRGB first, then compress to JP2
 
 ```bash
 nclr \
@@ -381,8 +404,25 @@ grk_compress -i UC_8bit_srgb.tif -o UC.jp2 \
   -r "362,256,181,128,90,64,45,32,22,16,11,8" \
   -I -t 1024,1024 -p RPCL -n 6 \
   -c [256,256],[256,256],[128,128],[128,128],[128,128],[128,128] \
-  -b 64,64 -X -M 1 -u R -H 4
+  -b 64,64 -X -M 1 -u R -f -H 4
 ```
+
+---
+
+## Key Batch Conversion Options Summary
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| `-i`, `--input` | Input file or directory | `--input D:\scans\MC` |
+| `-o`, `--output` | Output file or directory | `--output D:\scans\UC` |
+| `-r`, `--recursive` | Scan subdirectories | `-r` |
+| `--out-ext` | Output file extension (default: `tif`) | `--out-ext tif` |
+| `--suffix` | Append suffix to output filenames | `--suffix "_uc"` |
+| `--overwrite` | Replace existing files | `--overwrite` |
+| `--jobs` | Number of parallel workers (0=auto) | `--jobs 4` |
+| `--write-icc` | Create `.icc` sidecar files | `--write-icc` |
+
+All examples are ready to copy-paste and work with the current NCLR implementation. The `--write-icc` flag automatically creates sidecar files with the same base name as the output file but with `.icc` extension.
 
 ---
 
@@ -399,8 +439,7 @@ grk_compress -i UC_8bit_srgb.tif -o UC.jp2 \
 
 ## Black Point Compensation (BPC)
 
-Black Point Compensation adjusts shadow mapping between source and destination
-profiles with different black points.
+Black Point Compensation adjusts shadow mapping between source and destination profiles with different black points.
 
 **Recommendations:**
 
@@ -417,11 +456,11 @@ Disable BPC only for specialized proofing scenarios.
 
 When converting 16-bit → 8-bit output:
 
-1. Decode input image to 16-bit RGB
-2. Apply ICC transform in 16-bit precision
-3. Optionally apply tone mapping
-4. Optionally apply dithering
-5. Quantize to 8-bit RGB
+1.  Decode input image to 16-bit RGB
+2.  Apply ICC transform in 16-bit precision
+3.  Optionally apply tone mapping
+4.  Optionally apply dithering
+5.  Quantize to 8-bit RGB
 
 This ensures maximum color accuracy and avoids precision loss during ICC mapping.
 
@@ -467,7 +506,6 @@ The tool follows a **policy + override** design:
 
 - `--preset` provides **high-level recommended defaults** for common NDK workflows
 - explicit options **always override** preset values
-- `--ndk-profile` controls **policy decisions** (ICC allowed, default bit depth, etc.)
 
 ---
 
@@ -483,17 +521,9 @@ nclr [OPTIONS] --input <INPUT> --output <OUTPUT>
 
 ### `--preset <PRESET>`
 
-High-level convenience presets that fill in **recommended defaults** according to
-NDK-style digitization practice.
+High-level convenience presets that fill in **recommended defaults** according to NDK-style digitization practice.
 
-Explicit options you pass (e.g. `--intent`, `--out-depth`, `--tone-map`, `--dither`,
-`--ndk-profile`) **always take precedence** over the preset.
-
-| Preset        | Intended use | Policy summary |
-|---------------|--------------|----------------|
-| `ndk-mc`      | Master Copy rewrite ("MC II") | 16-bit output, ICC enabled (preserve input ICC) |
-| `ndk-uc-i`    | User Copy I (books, periodicals) | 8-bit output, **ICC disabled** |
-| `ndk-uc-ii`   | User Copy II (maps, manuscripts, old prints) | 8-bit output, ICC enabled (sRGB default) |
+Explicit options you pass (e.g. `--intent`, `--out-depth`, `--tone-map`, `--dither`) **always take precedence** over the preset.
 
 Example:
 
@@ -501,20 +531,11 @@ Example:
 nclr --preset ndk-uc-ii -i MC.tif -o UC.tif
 ```
 
----
-
-## NDK policy selection
-
-### `--ndk-profile <mc|uc-i|uc-ii>`
-
-Selects the **NDK policy profile**.  
-This affects **ICC handling** and **default output bit depth**.
-
-| Profile | Meaning | ICC output | Default bit depth |
-|--------|--------|------------|-------------------|
-| `mc`   | Archival / Master Copy rewrite ("MC II") | YES | 16-bit |
-| `uc-i` | User Copy I (books/periodicals) | NO (forced) | 8-bit |
-| `uc-ii`| User Copy II (maps/manuscripts) | YES (sRGB default) | 8-bit |
+| Preset        | Intended use | Policy summary |
+|---------------|--------------|----------------|
+| `ndk-mc`      | Master Copy rewrite ("MC II") | 16-bit output, ICC enabled (preserve input ICC) |
+| `ndk-uc-i`    | User Copy I (books, periodicals) | 8-bit output, **ICC disabled** |
+| `ndk-uc-ii`   | User Copy II (maps, manuscripts, old prints) | 8-bit output, ICC enabled (sRGB default) |
 
 > NDK reference: *[Standardy pro obrazová data](https://standardy.ndk.cz/ndk/standardy-digitalizace/standardy-pro-obrazova-data)*
 
@@ -533,6 +554,33 @@ Supported formats: TIFF, PNG, JPEG.
 
 Output image path.  
 Format is inferred from file extension.
+
+### Batch conversion options
+
+When `--input` is a directory, the following options apply:
+
+#### `-r, --recursive`
+
+Scan subdirectories for images.
+
+#### `--out-ext <EXTENSION>`
+
+Output file extension (default: `tif`).  
+Supported: `tif`, `tiff`, `png`, `jpg`, `jpeg`.
+
+#### `--suffix <SUFFIX>`
+
+Append suffix to output filename stem.  
+Example: `--suffix "_uc"` converts `image.tif` → `image_uc.tif`.
+
+#### `--overwrite`
+
+Replace existing output files.
+
+#### `--jobs <NUMBER>`
+
+Number of parallel workers (0 = auto).  
+Example: `--jobs 4` uses 4 CPU cores.
 
 ---
 
@@ -582,9 +630,21 @@ Overrides NDK policy and allows output ICC for **UC-I**.
 
 ---
 
-### `--write-icc <PATH>`
+### `--write-icc`
 
-Write output ICC profile to a **sidecar file** (optional convenience).
+Write output ICC profile to a **sidecar file** next to each output image.
+
+The sidecar path is derived from the output image path by changing the extension to `.icc`.
+
+Examples:
+
+```bash
+# Single file: creates out.icc next to out.tif
+nclr --preset ndk-uc-ii --write-icc --input input.tif --output out.tif
+
+# Batch: creates *.icc next to each output file
+nclr --preset ndk-uc-ii --write-icc --input D:\scans\MC --output D:\scans\UC --out-ext tif
+```
 
 > Note: for TIFF output, the ICC profile is embedded directly into the TIFF when policy allows it.  
 > Sidecar is only written when you explicitly request it.
@@ -686,7 +746,6 @@ Print help summary.
 ### `-V, --version`
 
 Print version.
-
 ---
 
 ## What exactly does each preset set?
@@ -699,11 +758,10 @@ This section documents **exactly which options are filled by each preset**.
 ---
 
 ### `--preset ndk-mc`
-**NDK Master Copy (archival copy rewrite / “MC-II”)**
+**NDK Master Copy (archival copy rewrite / "MC-II")**
 
 Use this when you need a *clean, standards-friendly* TIFF rewrite (e.g., for **JHOVE-valid** output TIFF).  
-NCLR preserves **pixel data + ICC (tag 34675) + resolution tags**, but may drop **non-core TIFF metadata**
-(EXIF/XMP/vendor/private tags) by design. Treat the rewritten result as **MC-II** under NDK practice.
+NCLR preserves **pixel data + ICC (tag 34675) + resolution tags**, but may drop **non-core TIFF metadata** (EXIF/XMP/vendor/private tags) by design. Treat the rewritten result as **MC-II** under NDK practice.
 
 | Option | Value | Meaning |
 |------|------|--------|
@@ -818,7 +876,7 @@ This section documents the tool’s **implicit defaults** (behavior when you do 
 
 ---
 
-## Minimal commands: “what exactly happens”
+## Minimal commands: "what exactly happens"
 
 ### A) Absolute minimum invocation
 
@@ -839,7 +897,7 @@ Because `--ndk-profile` defaults to `uc-ii`, this is effectively:
 
 ---
 
-### B) Minimal “UC-I” (books/periodicals, output ICC disabled)
+### B) Minimal "UC-I" (books/periodicals, output ICC disabled)
 
 ```bash
 nclr --ndk-profile uc-i -i in.tif -o out.tif
@@ -853,8 +911,7 @@ Effective behavior:
 - **Tone mapping:** `none`
 - **Dithering:** `false`
 
-If you actually want UC-I to do a controlled transform (e.g. to sRGB) while keeping the UC-I policy intent,
-override policy:
+If you actually want UC-I to do a controlled transform (e.g. to sRGB) while keeping the UC-I policy intent, override policy:
 
 ```bash
 nclr --ndk-profile uc-i --force-out-icc -i in.tif -o out.tif
@@ -862,7 +919,7 @@ nclr --ndk-profile uc-i --force-out-icc -i in.tif -o out.tif
 
 ---
 
-### C) Minimal “MC” (16-bit output, preserve input ICC by default)
+### C) Minimal "MC" (16-bit output, preserve input ICC by default)
 
 ```bash
 nclr --ndk-profile mc -i in.tif -o out.tif
