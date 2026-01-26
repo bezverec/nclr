@@ -10,7 +10,7 @@ License: GPL-3.0-or-later
 ===============================================================================
 */
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use image::GenericImageView;
 use lcms2::{Flags, Intent, PixelFormat, Profile, Transform};
@@ -21,6 +21,9 @@ use std::fs;
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+
+use walkdir::WalkDir;
+use rayon::prelude::*;
 
 use tiff::encoder::{colortype, Rational, TiffEncoder, TiffValue};
 use tiff::tags::{ResolutionUnit, Tag, Type as TiffType};
@@ -64,16 +67,6 @@ enum ToneMap {
 }
 
 #[derive(Debug, Copy, Clone, ValueEnum)]
-enum NdkProfile {
-    /// Archival Copy / Master Copy (ICC: yes)
-    Mc,
-    /// I. Production Master Copy (Books/Periodicals) (ICC: no)
-    UcI,
-    /// II. Production Master Copy (Maps/Manuscripts/Old prints) (ICC: yes)
-    UcII,
-}
-
-#[derive(Debug, Copy, Clone, ValueEnum)]
 enum Preset {
     /// Convenience preset for NDK Master Copy
     #[value(name = "ndk-mc")]
@@ -98,17 +91,37 @@ struct Args {
     #[arg(long, value_enum)]
     preset: Option<Preset>,
 
-    /// NDK policy profile: MC / UC-I / UC-II.
-    #[arg(long, value_enum)]
-    ndk_profile: Option<NdkProfile>,
-
     /// Input image (TIFF/PNG/JPEG...). For 16-bit workflows use TIFF/PNG.
     #[arg(short = 'i', long)]
     input: PathBuf,
 
-    /// Output image path. Format inferred from extension (tif/tiff/png/jpg/jpeg).
+    /// Output path. If INPUT is a file, this must be a file path (extension selects format).
+    /// If INPUT is a directory, this must be an output directory path.
     #[arg(short = 'o', long)]
     output: PathBuf,
+
+    /// If INPUT is a directory, scan it (and optionally its subdirectories) for images.
+    /// Supported extensions: tif, tiff, png, jpg, jpeg.
+    #[arg(short = 'r', long, default_value_t = false)]
+    recursive: bool,
+
+    /// When INPUT is a directory, choose output extension for generated files.
+    /// Default: "tif".
+    #[arg(long, default_value = "tif")]
+    out_ext: String,
+
+    /// When INPUT is a directory, append this suffix to each output filename stem.
+    /// Example: "_uc-ii".
+    #[arg(long, default_value = "")]
+    suffix: String,
+
+    /// Overwrite existing output files.
+    #[arg(long, default_value_t = false)]
+    overwrite: bool,
+
+    /// Parallel jobs for directory conversion (0 = auto).
+    #[arg(long, default_value_t = 0)]
+    jobs: usize,
 
     /// How to pick input ICC.
     #[arg(long, value_enum, default_value_t = DetectInputIcc::Auto)]
@@ -147,9 +160,11 @@ struct Args {
     #[arg(long)]
     dither: Option<bool>,
 
-    /// Write output ICC bytes to a sidecar file (explicit only; no auto sidecar for TIFF).
-    #[arg(long)]
-    write_icc: Option<PathBuf>,
+    /// Write the output ICC profile as a sidecar next to each output image.
+    ///
+    /// The sidecar path is derived from the output image path by changing the extension to `.icc`.
+    #[arg(long, default_value_t = false)]
+    write_icc: bool,
 
     /// Override NDK policy and allow output ICC for UC-I.
     #[arg(long, default_value_t = false)]
@@ -166,7 +181,7 @@ struct Args {
 
 #[derive(Debug, Copy, Clone)]
 struct Effective {
-    ndk_profile: NdkProfile,
+    preset: Preset,
     out_depth: BitDepth,
     intent: RenderIntent,
     tone_map: ToneMap,
@@ -176,80 +191,50 @@ struct Effective {
 
 /// Apply preset defaults, but do NOT override explicit user options.
 fn compute_effective(args: &Args) -> Effective {
-    // Base defaults (no preset):
-    let mut ndk_profile = args.ndk_profile.unwrap_or(NdkProfile::UcII);
-    let mut out_depth = args
-        .out_depth
-        .unwrap_or_else(|| default_out_depth_for_profile(ndk_profile));
+    // Default preset is NDK UC-II if not specified
+    let preset = args.preset.unwrap_or(Preset::NdkUcII);
+
+    // Base defaults
     let mut intent = args.intent.unwrap_or(RenderIntent::Perceptual);
     let mut tone_map = args.tone_map.unwrap_or(ToneMap::None);
     let mut dither = args.dither.unwrap_or(false);
     let bpc = args.bpc;
 
-    if let Some(p) = args.preset {
-        match p {
-            Preset::NdkMc => {
-                if args.ndk_profile.is_none() {
-                    ndk_profile = NdkProfile::Mc;
-                }
-                if args.out_depth.is_none() {
-                    out_depth = BitDepth::B16;
-                }
-                if args.intent.is_none() {
-                    intent = RenderIntent::Perceptual;
-                }
-                if args.tone_map.is_none() {
-                    tone_map = ToneMap::None;
-                }
-                if args.dither.is_none() {
-                    dither = false;
-                }
+    // Preset-specific defaults (only fill what the user didn't specify)
+    match preset {
+        Preset::NdkMc | Preset::NdkUcI => {
+            if args.intent.is_none() {
+                intent = RenderIntent::Perceptual;
             }
-            Preset::NdkUcI => {
-                if args.ndk_profile.is_none() {
-                    ndk_profile = NdkProfile::UcI;
-                }
-                if args.out_depth.is_none() {
-                    out_depth = BitDepth::B8;
-                }
-                if args.intent.is_none() {
-                    intent = RenderIntent::Perceptual;
-                }
-                if args.tone_map.is_none() {
-                    tone_map = ToneMap::None;
-                }
-                if args.dither.is_none() {
-                    dither = false;
-                }
+            if args.tone_map.is_none() {
+                tone_map = ToneMap::None;
             }
-            Preset::NdkUcII => {
-                if args.ndk_profile.is_none() {
-                    ndk_profile = NdkProfile::UcII;
-                }
-                if args.out_depth.is_none() {
-                    out_depth = BitDepth::B8;
-                }
-                if args.intent.is_none() {
-                    intent = RenderIntent::Perceptual;
-                }
-                // Conservative defaults here; if you want UC-II default perceptual+dither,
-                // change these two:
-                if args.tone_map.is_none() {
-                    tone_map = ToneMap::None;
-                }
-                if args.dither.is_none() {
-                    dither = false;
-                }
+            if args.dither.is_none() {
+                dither = false;
+            }
+        }
+        Preset::NdkUcII => {
+            if args.intent.is_none() {
+                intent = RenderIntent::Perceptual;
+            }
+            // Conservative defaults; you can change these to perceptual+dither for UC-II
+            if args.tone_map.is_none() {
+                tone_map = ToneMap::None;
+            }
+            if args.dither.is_none() {
+                dither = false;
             }
         }
     }
 
-    if args.out_depth.is_none() {
-        out_depth = default_out_depth_for_profile(ndk_profile);
-    }
+    // Output depth default depends on the preset
+    let out_depth = args.out_depth.unwrap_or_else(|| match preset {
+        Preset::NdkMc => BitDepth::B16,
+        _ => BitDepth::B8,
+    });
 
     Effective {
-        ndk_profile,
+        preset,
         out_depth,
         intent,
         tone_map,
@@ -631,13 +616,6 @@ fn pick_input_profile(args: &Args, tiff_meta: Option<&TiffMeta>) -> Result<Profi
     }
 }
 
-fn default_out_depth_for_profile(p: NdkProfile) -> BitDepth {
-    match p {
-        NdkProfile::Mc => BitDepth::B16,
-        NdkProfile::UcI | NdkProfile::UcII => BitDepth::B8,
-    }
-}
-
 /// Output profile policy:
 /// - UC-I: ICC OFF (unless force_out_icc)
 /// - UC-II: ICC ON (default sRGB unless out_icc specified)
@@ -647,12 +625,12 @@ fn default_out_depth_for_profile(p: NdkProfile) -> BitDepth {
 ///     - else => sRGB
 fn pick_output_profile_with_policy(
     args: &Args,
-    ndk_profile: NdkProfile,
+    preset: Preset,
     in_prof: &Profile,
     in_icc_bytes: Option<&[u8]>,
 ) -> Result<Option<Profile>> {
-    match ndk_profile {
-        NdkProfile::UcI => {
+    match preset {
+        Preset::NdkUcI => {
             if args.force_out_icc {
                 let p = match args.out_icc.as_deref() {
                     Some(path) => Profile::new_file(path)?,
@@ -663,14 +641,14 @@ fn pick_output_profile_with_policy(
                 Ok(None)
             }
         }
-        NdkProfile::UcII => {
+        Preset::NdkUcII => {
             let p = match args.out_icc.as_deref() {
                 Some(path) => Profile::new_file(path)?,
                 None => Profile::new_srgb(),
             };
             Ok(Some(p))
         }
-        NdkProfile::Mc => {
+        Preset::NdkMc => {
             if let Some(path) = args.out_icc.as_deref() {
                 return Ok(Some(Profile::new_file(path)?));
             }
@@ -981,67 +959,166 @@ fn write_tiff_rgb8(
     Ok(())
 }
 
-// ---------------- main ----------------
+// ---------------- File operations ----------------
 
-fn main() -> Result<()> {
-    let args = Args::parse();
-    let eff = compute_effective(&args);
+fn is_supported_image_ext(p: &Path) -> bool {
+    match p
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase())
+    {
+        Some(ext) => matches!(ext.as_str(), "tif" | "tiff" | "png" | "jpg" | "jpeg"),
+        None => false,
+    }
+}
 
-    let in_is_tiff = is_tiff_path(&args.input);
-    let out_is_tiff = is_tiff_path(&args.output);
+fn collect_input_files(root: &Path, recursive: bool) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    if recursive {
+        for e in WalkDir::new(root).follow_links(false) {
+            let e = e?;
+            if e.file_type().is_file() {
+                let p = e.path();
+                if is_supported_image_ext(p) {
+                    files.push(p.to_path_buf());
+                }
+            }
+        }
+    } else {
+        for e in std::fs::read_dir(root)? {
+            let e = e?;
+            let p = e.path();
+            if p.is_file() && is_supported_image_ext(&p) {
+                files.push(p);
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn normalize_out_ext(ext: &str) -> Result<String> {
+    let e = ext.trim().trim_start_matches('.').to_ascii_lowercase();
+    if matches!(e.as_str(), "tif" | "tiff" | "png" | "jpg" | "jpeg") {
+        Ok(e)
+    } else {
+        bail!("Unsupported --out-ext: {ext}. Use one of: tif, tiff, png, jpg, jpeg");
+    }
+}
+
+fn sidecar_path_for(output: &Path) -> PathBuf {
+    let mut p = output.to_path_buf();
+    p.set_extension("icc");
+    p
+}
+
+fn convert_one(args: &Args, eff: &Effective, input: &Path, output: &Path) -> Result<()> {
+    let in_is_tiff = is_tiff_path(input);
+    let out_is_tiff = is_tiff_path(output);
 
     // Read TIFF meta (ICC + resolution) cheaply if input is TIFF.
     let tiff_meta = if in_is_tiff {
-        Some(read_tiff_meta(&args.input).context("Read TIFF meta (ICC + resolution)")?)
+        match read_tiff_meta(input) {
+            Ok(meta) => Some(meta),
+            Err(e) => {
+                eprintln!(
+                    "Warning: could not read TIFF metadata from {}: {}",
+                    input.display(),
+                    e
+                );
+                None
+            }
+        }
     } else {
         None
     };
 
-    let in_prof = pick_input_profile(&args, tiff_meta.as_ref()).context("Pick input ICC profile")?;
+    let in_prof = pick_input_profile(args, tiff_meta.as_ref())
+        .with_context(|| format!("Pick input ICC profile for {}", input.display()))?;
 
     // Input ICC bytes (for "preserve embedded ICC" behavior)
     let in_icc_bytes = tiff_meta.as_ref().and_then(|m| m.icc.as_deref());
 
-    let out_prof_opt =
-        pick_output_profile_with_policy(&args, eff.ndk_profile, &in_prof, in_icc_bytes)
-            .context("Pick output ICC profile (policy)")?;
+    let out_prof_opt = pick_output_profile_with_policy(args, eff.preset, &in_prof, in_icc_bytes)
+        .with_context(|| format!("Pick output ICC profile (policy) for {}", input.display()))?;
 
-    // Optional explicit sidecar writing (ONLY if user requests)
-    if let (Some(path), Some(out_prof)) = (args.write_icc.as_deref(), out_prof_opt.as_ref()) {
-        let out_bytes = out_prof.icc().context("Export output ICC bytes")?;
-        fs::write(path, out_bytes).context("Write ICC sidecar")?;
+    // Optional: write ICC sidecar next to each output image
+    if args.write_icc {
+        if let Some(out_prof) = out_prof_opt.as_ref() {
+            match out_prof.icc() {
+                Ok(out_bytes) => {
+                    let path = sidecar_path_for(output);
+                    fs::write(&path, out_bytes)
+                        .with_context(|| format!("Write ICC sidecar to {}", path.display()))?;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Warning: could not export ICC for sidecar {}: {}",
+                        output.display(),
+                        e
+                    );
+                }
+            }
+        }
     }
 
+    // Debug info - print for each file
     if args.debug_icc {
-        let in_bytes = in_prof.icc().context("Export input ICC bytes")?;
-        eprintln!(
-            "[icc] in_profile: {} bytes (v{:.4})",
-            in_bytes.len(),
-            in_prof.version()
-        );
+        match in_prof.icc() {
+            Ok(in_bytes) => {
+                eprintln!(
+                    "[icc] {} -> in_profile: {} bytes (v{:.4})",
+                    input.display(),
+                    in_bytes.len(),
+                    in_prof.version()
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "[icc] {} -> failed to get input ICC: {}",
+                    input.display(),
+                    e
+                );
+            }
+        }
 
         if let Some(out_prof) = out_prof_opt.as_ref() {
-            let out_bytes = out_prof.icc().context("Export output ICC bytes")?;
-            eprintln!(
-                "[icc] out_profile: {} bytes (v{:.4})",
-                out_bytes.len(),
-                out_prof.version()
-            );
+            match out_prof.icc() {
+                Ok(out_bytes) => {
+                    eprintln!(
+                        "[icc] {} -> out_profile: {} bytes (v{:.4})",
+                        output.display(),
+                        out_bytes.len(),
+                        out_prof.version()
+                    );
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[icc] {} -> failed to get output ICC: {}",
+                        output.display(),
+                        e
+                    );
+                }
+            }
         } else {
-            eprintln!("[icc] out_profile: (NONE) per policy");
+            eprintln!(
+                "[icc] {} -> out_profile: (NONE) per policy",
+                output.display()
+            );
         }
     }
 
     // Load image pixels (RGB16 path; we quantize later if needed)
-    let (w, h, mut rgb16) = load_rgb16(&args.input).context("Load image as RGB16")?;
+    let (w, h, mut rgb16) = load_rgb16(input)
+        .with_context(|| format!("Load image as RGB16 from {}", input.display()))?;
 
     // If no ICC transform requested or policy disables ICC output: just depth conversion.
     if args.no_icc || out_prof_opt.is_none() {
         match eff.out_depth {
             BitDepth::B16 => {
                 if out_is_tiff {
-                    // Policy says "no out ICC", so we do NOT embed ICC here.
-                    write_tiff_rgb16(&args.output, w, h, &rgb16, None, tiff_meta.as_ref())?;
+                    write_tiff_rgb16(output, w, h, &rgb16, None, tiff_meta.as_ref())
+                        .with_context(|| format!("Write TIFF RGB16 to {}", output.display()))?;
                 } else {
                     let mut raw = Vec::<u16>::with_capacity(rgb16.len() * 3);
                     for p in &rgb16 {
@@ -1051,14 +1128,15 @@ fn main() -> Result<()> {
                     }
                     let buf = image::ImageBuffer::<image::Rgb<u16>, Vec<u16>>::from_raw(w, h, raw)
                         .context("Create RGB16 buffer")?;
-                    buf.save(&args.output)?;
+                    buf.save(output)
+                        .with_context(|| format!("Save image to {}", output.display()))?;
                 }
             }
             BitDepth::B8 => {
-                let rgb8 =
-                    quantize_rgb16_to_rgb8_stream_dither(&rgb16, w, h, eff.tone_map, eff.dither);
+                let rgb8 = quantize_rgb16_to_rgb8_stream_dither(&rgb16, w, h, eff.tone_map, eff.dither);
                 if out_is_tiff {
-                    write_tiff_rgb8(&args.output, w, h, &rgb8, None, tiff_meta.as_ref())?;
+                    write_tiff_rgb8(output, w, h, &rgb8, None, tiff_meta.as_ref())
+                        .with_context(|| format!("Write TIFF RGB8 to {}", output.display()))?;
                 } else {
                     let mut raw = Vec::<u8>::with_capacity(rgb8.len() * 3);
                     for p in &rgb8 {
@@ -1066,9 +1144,9 @@ fn main() -> Result<()> {
                         raw.push(p.g);
                         raw.push(p.b);
                     }
-                    let buf =
-                        image::RgbImage::from_raw(w, h, raw).context("Create RGB8 buffer")?;
-                    buf.save(&args.output)?;
+                    let buf = image::RgbImage::from_raw(w, h, raw).context("Create RGB8 buffer")?;
+                    buf.save(output)
+                        .with_context(|| format!("Save image to {}", output.display()))?;
                 }
             }
         }
@@ -1096,7 +1174,17 @@ fn main() -> Result<()> {
 
     // Decide ICC embedding bytes for TIFF outputs (MC and UC-II end up here).
     let embed_icc_bytes = if out_is_tiff {
-        Some(out_prof.icc().context("Export output ICC bytes")?)
+        match out_prof.icc() {
+            Ok(bytes) => Some(bytes),
+            Err(e) => {
+                eprintln!(
+                    "Warning: could not export output ICC bytes for {}: {}",
+                    output.display(),
+                    e
+                );
+                None
+            }
+        }
     } else {
         None
     };
@@ -1105,13 +1193,16 @@ fn main() -> Result<()> {
         BitDepth::B16 => {
             if out_is_tiff {
                 write_tiff_rgb16(
-                    &args.output,
+                    output,
                     w,
                     h,
                     &rgb16,
                     embed_icc_bytes.as_deref(),
                     tiff_meta.as_ref(),
-                )?;
+                )
+                .with_context(|| {
+                    format!("Write TIFF RGB16 with ICC to {}", output.display())
+                })?;
             } else {
                 let mut raw = Vec::<u16>::with_capacity(rgb16.len() * 3);
                 for p in &rgb16 {
@@ -1121,21 +1212,22 @@ fn main() -> Result<()> {
                 }
                 let buf = image::ImageBuffer::<image::Rgb<u16>, Vec<u16>>::from_raw(w, h, raw)
                     .context("Create RGB16 buffer")?;
-                buf.save(&args.output)?;
+                buf.save(output)
+                    .with_context(|| format!("Save image to {}", output.display()))?;
             }
         }
         BitDepth::B8 => {
-            let rgb8 =
-                quantize_rgb16_to_rgb8_stream_dither(&rgb16, w, h, eff.tone_map, eff.dither);
+            let rgb8 = quantize_rgb16_to_rgb8_stream_dither(&rgb16, w, h, eff.tone_map, eff.dither);
             if out_is_tiff {
                 write_tiff_rgb8(
-                    &args.output,
+                    output,
                     w,
                     h,
                     &rgb8,
                     embed_icc_bytes.as_deref(),
                     tiff_meta.as_ref(),
-                )?;
+                )
+                .with_context(|| format!("Write TIFF RGB8 with ICC to {}", output.display()))?;
             } else {
                 let mut raw = Vec::<u8>::with_capacity(rgb8.len() * 3);
                 for p in &rgb8 {
@@ -1144,9 +1236,182 @@ fn main() -> Result<()> {
                     raw.push(p.b);
                 }
                 let buf = image::RgbImage::from_raw(w, h, raw).context("Create RGB8 buffer")?;
-                buf.save(&args.output)?;
+                buf.save(output)
+                    .with_context(|| format!("Save image to {}", output.display()))?;
             }
         }
+    }
+
+    Ok(())
+}
+
+fn process_batch_conversion(
+    args: &Args,
+    eff: &Effective,
+    in_dir: &Path,
+    out_dir: &Path,
+    out_ext: &str,
+    inputs: Vec<PathBuf>,
+    jobs: Option<usize>,
+) -> Result<()> {
+    // Funkce pro zpracování jednoho souboru v batch režimu
+    let process_single = |input_path: &Path| -> Result<()> {
+        let rel = match input_path.strip_prefix(in_dir) {
+            Ok(r) => r,
+            Err(_) => {
+                return Err(anyhow!(
+                    "Failed to compute relative path for {}",
+                    input_path.display()
+                ));
+            }
+        };
+
+        let rel_parent = rel.parent().unwrap_or(Path::new(""));
+        let stem = match input_path.file_stem() {
+            Some(s) => s,
+            None => {
+                return Err(anyhow!(
+                    "Invalid file name (no stem): {}",
+                    input_path.display()
+                ));
+            }
+        };
+
+        let stem_str = match stem.to_str() {
+            Some(s) => s,
+            None => {
+                return Err(anyhow!(
+                    "Invalid UTF-8 file name: {}",
+                    input_path.display()
+                ));
+            }
+        };
+
+        let target_dir = out_dir.join(rel_parent);
+        if let Err(e) = std::fs::create_dir_all(&target_dir) {
+            return Err(anyhow!(
+                "Failed to create directory {}: {}",
+                target_dir.display(),
+                e
+            ));
+        }
+
+        let out_name = format!("{}{}.{}", stem_str, args.suffix, out_ext);
+        let out_path = target_dir.join(out_name);
+
+        if out_path.exists() && !args.overwrite {
+            eprintln!("Skipping existing: {}", out_path.display());
+            return Ok(());
+        }
+
+        convert_one(args, eff, input_path, &out_path)
+            .map_err(|e| anyhow!("{} -> {}: {}", input_path.display(), out_path.display(), e))
+    };
+
+    // Paralelní zpracování
+    let run = || -> Result<()> {
+        let pool = match jobs {
+            Some(n) => {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(n)
+                    .build()
+                    .context("Failed to create thread pool")?
+            }
+            None => rayon::ThreadPoolBuilder::new()
+                .build()
+                .context("Failed to create thread pool")?,
+        };
+
+        pool.install(|| {
+            let results: Vec<Result<()>> = inputs.par_iter().map(|input_path| process_single(input_path)).collect();
+
+            // Aggregate errors (if any)
+            let mut ok = 0usize;
+            let mut errs = Vec::new();
+            for r in results {
+                match r {
+                    Ok(()) => ok += 1,
+                    Err(e) => errs.push(e),
+                }
+            }
+
+            if !errs.is_empty() {
+                eprintln!("Completed with errors: ok={ok}, errors={}", errs.len());
+                for e in errs.iter().take(20) {
+                    eprintln!("  - {e}");
+                }
+                if errs.len() > 20 {
+                    eprintln!("  ... and {} more errors", errs.len() - 20);
+                }
+                bail!("Batch conversion failed with {} errors.", errs.len());
+            }
+
+            eprintln!("Batch conversion successful: {ok} files processed.");
+            Ok(())
+        })
+    };
+
+    run()
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+    let eff = compute_effective(&args);
+
+    if args.input.is_dir() {
+        let in_dir = &args.input;
+        let out_dir = &args.output;
+
+        if out_dir.exists() && !out_dir.is_dir() {
+            bail!(
+                "OUTPUT must be a directory when INPUT is a directory: {}",
+                out_dir.display()
+            );
+        }
+
+        if let Err(e) = std::fs::create_dir_all(out_dir) {
+            bail!(
+                "Failed to create output directory {}: {}",
+                out_dir.display(),
+                e
+            );
+        }
+
+        let out_ext = normalize_out_ext(&args.out_ext)?;
+        let inputs = collect_input_files(in_dir, args.recursive)?;
+
+        if inputs.is_empty() {
+            bail!("No supported images found in {}", in_dir.display());
+        }
+
+        eprintln!("Found {} files to process", inputs.len());
+
+        let jobs = if args.jobs == 0 { None } else { Some(args.jobs) };
+
+        process_batch_conversion(&args, &eff, in_dir, out_dir, &out_ext, inputs, jobs)?;
+    } else {
+        // Single-file mode
+        if args.output.is_dir() {
+            bail!(
+                "OUTPUT must be a file when INPUT is a file: {}",
+                args.output.display()
+            );
+        }
+
+        if args.output.exists() && !args.overwrite {
+            bail!(
+                "Output file already exists: {}. Use --overwrite to replace.",
+                args.output.display()
+            );
+        }
+
+        convert_one(&args, &eff, &args.input, &args.output).with_context(|| {
+            format!(
+                "Failed to convert {} to {}",
+                args.input.display(),
+                args.output.display()
+            )
+        })?;
     }
 
     Ok(())

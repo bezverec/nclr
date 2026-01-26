@@ -1,6 +1,6 @@
 [package]
 name = "nclr"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 license = "GPL-3.0-or-later"
 description = "NDK Color: color conversion and 16↔8 bit-depth conversion using LittleCMS2 (lcms2 crate)"
@@ -15,6 +15,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 tiff = "0.9"
 lcms2 = "6.1"
 rgb = "0.8"
+walkdir = "2.5"
+rayon = "1.10"
 
 [profile.release]
 opt-level = 3
@@ -23,3 +25,4 @@ codegen-units = 1
 panic = "abort"
 strip = "symbols"
 debug = 0
+incremental = false
