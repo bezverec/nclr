@@ -152,6 +152,19 @@ Notes:
 
 ---
 
+## Usage examples
+
+Notes:
+
+- Prefer `--preset` for NDK-style workflows. You can still override anything explicitly.
+- For 16-bit workflows use TIFF/PNG as input (JPEG is typically 8-bit).
+- Under NDK policy:
+  - `UC-I` forces **NO output ICC** (unless `--force-out-icc`).
+  - `UC-II` embeds **sRGB ICC into the output TIFF** by default (unless overridden via `--out-icc`).
+  - `MC` preserves the **embedded input ICC** by default (no forced sRGB unless you set `--out-icc`).
+
+---
+
 ### 1) Recommended way: presets
 
 #### NDK UC-II (maps/manuscripts/old prints): 16-bit MC → 8-bit UC, output ICC (sRGB embedded)
@@ -183,7 +196,33 @@ nclr \
 
 ---
 
-### 2) Explicit NDK profile (same idea as presets)
+### 2) Batch conversion (directory → directory)
+
+Convert all supported images in a folder to TIFF, keeping base names:
+
+```bash
+nclr \
+  --preset ndk-uc-ii \
+  --input  D:\scans\MC \
+  --output D:\scans\UC \
+  --out-ext tif
+```
+
+Recursive variant (also available as `-r`):
+
+```bash
+nclr --preset ndk-uc-ii -r --input D:\scans\MC --output D:\scans\UC --out-ext tif
+```
+
+Parallel processing (0 = default Rayon behavior, otherwise set explicit worker count):
+
+```bash
+nclr --preset ndk-uc-ii -r --jobs 8 --input D:\scans\MC --output D:\scans\UC
+```
+
+---
+
+### 3) Explicit NDK profile (same idea as presets)
 
 #### UC-II via policy flag
 
@@ -214,7 +253,7 @@ nclr \
 
 ---
 
-### 3) ICC handling examples
+### 4) ICC handling examples
 
 #### Automatic embedded ICC detection (default `--detect-input-icc auto`)
 
@@ -258,6 +297,20 @@ nclr \
   --output out.tif
 ```
 
+#### Write ICC sidecar(s) (next to output image)
+
+Single-file example (writes `out.icc` next to `out.tif`):
+
+```bash
+nclr --preset ndk-uc-ii --write-icc --input input.tif --output out.tif
+```
+
+Batch example (writes `*.icc` next to each output image in the output directory):
+
+```bash
+nclr --preset ndk-uc-ii --write-icc --input D:\scans\MC --output D:\scans\UC --out-ext tif
+```
+
 #### Write ICC sidecar explicitly (optional; output TIFF already contains embedded ICC when policy allows it)
 
 ```bash
@@ -270,7 +323,7 @@ nclr \
 
 ---
 
-### 4) Rendering intent + BPC
+### 5) Rendering intent + BPC
 
 #### Perceptual (good default for viewer derivatives)
 
@@ -283,7 +336,7 @@ nclr \
   --output out.tif
 ```
 
-#### Relative colorimetric + BPC (often preferred for “faithful” reproduction)
+#### Relative colorimetric + BPC (often preferred for "faithful" reproduction)
 
 ```bash
 nclr \
@@ -307,7 +360,7 @@ nclr \
 
 ---
 
-### 5) Bit depth, tone mapping and dithering
+### 6) Bit depth, tone mapping and dithering
 
 #### Force 8-bit output explicitly
 
@@ -343,7 +396,7 @@ nclr \
 
 ---
 
-### 6) Diagnostics / troubleshooting
+### 7) Diagnostics / troubleshooting
 
 #### Print ICC diagnostics (profile sizes + versions)
 
@@ -367,7 +420,7 @@ nclr \
 
 ---
 
-### 7) Pipeline example: NCLR → JPEG2000 (Grok)
+### 8) Pipeline example: NCLR → JPEG2000 (Grok)
 
 #### UC-II (NDK-ish): convert to 8-bit sRGB first, then compress to JP2
 
@@ -381,7 +434,7 @@ grk_compress -i UC_8bit_srgb.tif -o UC.jp2 \
   -r "362,256,181,128,90,64,45,32,22,16,11,8" \
   -I -t 1024,1024 -p RPCL -n 6 \
   -c [256,256],[256,256],[128,128],[128,128],[128,128],[128,128] \
-  -b 64,64 -X -M 1 -u R -H 4
+  -b 64,64 -X -M 1 -u R -f -H 4
 ```
 
 ---
