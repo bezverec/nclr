@@ -12,7 +12,7 @@ The code is AI generated using ChatGPT model 5.2 and Deepseek v3.x.
 
 ## Notice
 
-16bit images are currently not NDK [(Czech digitization standards)](https://standardy.ndk.cz/) compliant, although technically possible and even preferable.
+16bit images (16 per channel - RGB) are currently not NDK [(Czech digitization standards)](https://standardy.ndk.cz/) compliant, although technically possible and even preferable.
 
 ---
 ## Build from Source
