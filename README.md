@@ -6,6 +6,14 @@ NCLR provides a **reference preprocessing step** for digitization pipelines wher
 
 It is designed for use in memory institutions (libraries, archives, museums) and aligns with NDK-style digitization practice.
 
+## AI generated code disclosure
+
+The code is AI generated using ChatGPT model 5.2 and Deepseek v3.x.
+
+## Notice
+
+16bit images are currently not NDK [(Czech digitization standards)](https://standardy.ndk.cz/) compliant, although technically possible and even preferable.
+
 ---
 ## Build from Source
 
