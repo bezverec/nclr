@@ -63,16 +63,10 @@ After building, the executable will be located at:
 - **Windows**: `target/release/nclr.exe`
 - **Linux/macOS**: `target/release/nclr`
 
-You can copy it to a directory in your PATH or install it system-wide:
+### Installation (local path)
 
-**Linux/macOS**:
 ```bash
-sudo cp target/release/nclr /usr/local/bin/
-```
-
-**Windows** (PowerShell as Administrator):
-```powershell
-Copy-Item target/release/nclr.exe "C:\Windows\System32\"
+cargo install --path .
 ```
 
 ### Build options
